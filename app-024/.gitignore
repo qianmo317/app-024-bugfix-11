@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+coverage/
+.DS_Store
+.vscode/
+.idea/
+# 真实活动数据与个人名单不入库
+events/
+onsite/
+exports/
+*猜中者*.csv
+*登记表*.csv
