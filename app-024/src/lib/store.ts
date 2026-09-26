@@ -32,6 +32,36 @@ function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+function maxNo(riddles: Riddle[]): number {
+  let m = 0;
+  for (const r of riddles) if (Number.isFinite(r.no) && r.no > m) m = r.no;
+  return m;
+}
+
+/**
+ * 修复历史脏数据中的重复/缺失谜号：每个号只保留最早校验（即最早入库）的一条，
+ * 其余依次改派到当前最大号之后。谜条 id 不变，现场登记等外键引用不受影响。
+ * 返回被改号的谜条（需要落库）。
+ */
+function repairDuplicateNos(riddles: Riddle[]): Riddle[] {
+  const taken = new Set<number>();
+  let next = maxNo(riddles) + 1;
+  const repaired: Riddle[] = [];
+  // 保持谜号小者优先：同一号里 checkedAt 更早的（先入库）保留原号
+  const ordered = [...riddles].sort((a, b) => a.no - b.no || a.check.checkedAt - b.check.checkedAt);
+  for (const r of ordered) {
+    if (Number.isFinite(r.no) && r.no > 0 && !taken.has(r.no)) {
+      taken.add(r.no);
+      continue;
+    }
+    while (taken.has(next)) next++;
+    taken.add(next);
+    repaired.push({ ...r, no: next });
+    next++;
+  }
+  return repaired;
+}
+
 class AppStore {
   private state: AppState = {
     ready: false,
@@ -66,6 +96,16 @@ class AppStore {
           loadDataCtx(import.meta.env.BASE_URL),
         ]);
         this.state.riddles = riddles.sort((a, b) => a.no - b.no);
+        // 修复旧版本遗留的重复/缺失谜号（如多批导入都从 1 编号）
+        const repaired = repairDuplicateNos(this.state.riddles);
+        if (repaired.length) {
+          for (const r of repaired) {
+            const i = this.state.riddles.findIndex((x) => x.id === r.id);
+            if (i >= 0) this.state.riddles[i] = r;
+          }
+          this.state.riddles.sort((a, b) => a.no - b.no);
+          await idb.putMany(idb.STORE_RIDDLES, repaired);
+        }
         this.state.records = records.sort((a, b) => b.at - a.at);
         if (settings) {
           this.state.settings = {
@@ -86,8 +126,11 @@ class AppStore {
   }
 
   // ---- 谜库 ----
+  // 谜号必须单调递增、全库唯一（现场对号登记依赖此约定），
+  // 因此取下一个号用「现存最大号 + 1」，而不是「条数 + 1」：
+  // 删掉中间几条后条数会变小，后者会与仍挂着的谜条撞号。
   nextNo(): number {
-    return this.state.riddles.length + 1;
+    return maxNo(this.state.riddles) + 1;
   }
 
   /** 新增/保存：自动计算谜格校验结果 */
@@ -115,18 +158,22 @@ class AppStore {
     return riddle;
   }
 
-  /** 批量导入（去重后的新增项） */
+  /** 批量导入（去重后的新增项）：谜号接在全库最大号之后，避免第二批导入又从 1 开始 */
   async addRiddles(items: (Omit<Riddle, 'id' | 'no' | 'check'> & Partial<Pick<Riddle, 'no'>>)[]): Promise<number> {
     const now = Date.now();
-    const riddles: Riddle[] = items.map((it, i) => ({
-      ...it,
-      id: uid(),
-      no: i + 1,
-      tags: it.tags ?? [],
-      difficulty: it.difficulty ?? 2,
-      check: { ...validateRiddle(it, this.state.ctx), checkedAt: now },
-    }));
-    this.state.riddles = [...this.state.riddles, ...riddles];
+    let no = maxNo(this.state.riddles) + 1;
+    const riddles: Riddle[] = items.map((it) => {
+      const r: Riddle = {
+        ...it,
+        id: uid(),
+        no: no++,
+        tags: it.tags ?? [],
+        difficulty: it.difficulty ?? 2,
+        check: { ...validateRiddle(it, this.state.ctx), checkedAt: now },
+      };
+      return r;
+    });
+    this.state.riddles = [...this.state.riddles, ...riddles].sort((a, b) => a.no - b.no);
     await idb.putMany(idb.STORE_RIDDLES, riddles);
     this.emit();
     return riddles.length;
@@ -146,7 +193,14 @@ class AppStore {
   async removeRiddles(ids: string[]): Promise<void> {
     const set = new Set(ids);
     this.state.riddles = this.state.riddles.filter((r) => !set.has(r.id));
-    await idb.putMany(idb.STORE_RIDDLES, this.state.riddles);
+    // 必须真正 delete：旧实现用 putMany 回写剩余列表，IDB 里被删的记录原封不动，
+    // 刷新页面后又会回来。
+    await idb.deleteMany(idb.STORE_RIDDLES, ids);
+    // 顺手清掉活动出条清单里对已删谜条的悬挂引用
+    const kept = this.state.settings.event.riddleIds.filter((rid) => !set.has(rid));
+    if (kept.length !== this.state.settings.event.riddleIds.length) {
+      await this.saveSettings({ event: { ...this.state.settings.event, riddleIds: kept } });
+    }
     this.emit();
   }
 

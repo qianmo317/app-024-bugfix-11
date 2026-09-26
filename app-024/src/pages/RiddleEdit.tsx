@@ -4,6 +4,7 @@ import { useAppState, navigate } from '../ui/router';
 import { VerdictBadge } from '../ui/bits';
 import { validateRiddle, FORMAT_RULE_BRIEF, FORMAT_AUTO_CAPABILITY } from '../lib/validate';
 import { findSimilar } from '../lib/duplicates';
+import { parseTags } from '../lib/csv';
 import { CATEGORY_LABEL, FORMAT_LABEL, AGE_LABEL, type AgeGroup, type RiddleCategory, type RiddleFormat } from '../types';
 import { store } from '../lib/store';
 
@@ -55,8 +56,13 @@ export function RiddleEdit({ id }: { id: string }) {
       ...(existing ? { id: existing.id } : {}),
       surface: draft.surface.trim(), answer: draft.answer.trim(),
       category: draft.category, format: draft.format,
+      formatNote: draft.formatNote.trim() || undefined,
+      author: draft.author.trim() || undefined,
+      source: draft.source.trim() || undefined,
       difficulty: draft.difficulty,
-      tags: draft.tags.trim() ? [draft.tags.trim()] : [],
+      ageGroup: draft.ageGroup || undefined,
+      // 标签框里「儿童专区、党史主题」要拆成两个标签，不能整串存成一个
+      tags: parseTags(draft.tags),
       note: draft.note.trim() || undefined,
     });
     setSaved(`已保存（谜号 ${savedR.no}）`);

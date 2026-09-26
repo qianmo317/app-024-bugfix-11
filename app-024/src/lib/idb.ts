@@ -87,6 +87,26 @@ export async function del(store: string, key: string): Promise<void> {
   if (!ok) memStore(store).delete(key);
 }
 
+/** 批量删除：必须真正下发 delete 请求——重写全表（putMany）无法让记录消失 */
+export async function deleteMany(store: string, keys: string[]): Promise<void> {
+  const db = await openDB();
+  if (!db) {
+    const m = memStore(store);
+    for (const k of keys) m.delete(k);
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    try {
+      const t = db.transaction(store, 'readwrite');
+      const os = t.objectStore(store);
+      for (const k of keys) os.delete(k);
+      t.oncomplete = () => resolve();
+      t.onerror = () => resolve();
+      t.onabort = () => resolve();
+    } catch { resolve(); }
+  });
+}
+
 export async function clearStore(store: string): Promise<void> {
   const { ok } = await tx(store, 'readwrite', (s) => s.clear());
   if (!ok) memStore(store).clear();
