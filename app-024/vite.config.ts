@@ -15,4 +15,7 @@ export default defineConfig({
   server: {
     port: 5104,
   },
+  test: {
+    exclude: ['**/node_modules/**', '**/dist/**', 'tests/e2e/**'],
+  },
 });
